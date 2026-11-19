@@ -51,6 +51,10 @@ li .t{font-variant-numeric:tabular-nums;font-weight:700}
 .empty-note{opacity:.8;text-align:center;padding:10px}
 h2{font-size:16px;text-transform:uppercase;letter-spacing:.08em;opacity:.85;margin:0 0 8px}
 </style>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<style>.lnk{background:none;border:0;color:#fff;opacity:.6;text-decoration:underline;cursor:pointer;font-size:13px}#login{display:none;margin-top:10px}</style>
 </head>
 <body>
 <main>
@@ -59,16 +63,26 @@ h2{font-size:16px;text-transform:uppercase;letter-spacing:.08em;opacity:.85;marg
     <h1>Course Bureau Technique</h1>
   </header>
 
-  <div class="add" id="addbox">
+  <div class="add" id="addbox" style="display:none">
     <input id="pseudo" placeholder="Pseudo" maxlength="20" autocomplete="off">
     <input id="time" placeholder="Temps (ex. 12.34 ou 1:05.20)" inputmode="decimal" autocomplete="off">
     <button id="btn">Ajouter le temps</button>
     <div id="msg"></div>
   </div>
 
+  <div id="status" style="font-size:14px;margin-bottom:10px"></div>
   <section class="podium" id="podium"></section>
   <h2>Top 10</h2>
   <ol id="list"></ol>
+<footer style="margin-top:28px;text-align:center">
+    <button class="lnk" id="adminbtn">Admin</button>
+    <div class="add" id="login">
+      <input id="email" type="email" placeholder="Email" autocomplete="username">
+      <input id="pwd" type="password" placeholder="Mot de passe" autocomplete="current-password">
+      <button id="loginok">Connexion</button>
+      <div id="lmsg"></div>
+    </div>
+  </footer>
 </main>
 
 <div id="ov"><div class="box">
@@ -79,7 +93,7 @@ h2{font-size:16px;text-transform:uppercase;letter-spacing:.08em;opacity:.85;marg
   <div class="row"><button class="no" id="ecancel">Annuler</button><button class="ok" id="esave">Enregistrer</button></div>
 </div></div>
 <script>
-let entries = [], canWrite = true, col = null, editId = null;
+let entries = [], canWrite = false, col = null, editId = null;
 const $ = id => document.getElementById(id);
 
 function fmt(ms){
@@ -96,7 +110,7 @@ function say(t){ $('msg').textContent = t; }
 
 function del(id){
   if(!col) return;
-  col.doc(id).delete().catch(()=>say('Suppression impossible.'));
+  col.child(id).remove().catch(()=>say('Suppression impossible.'));
 }
 function openEdit(id){
   const e = entries.find(x=>x.id===id); if(!e) return;
@@ -109,7 +123,7 @@ async function saveEdit(){
   const pseudo = $('epseudo').value.trim(), ms = parse($('etime').value);
   if(!pseudo) return $('emsg').textContent='Entre un pseudo.';
   if(!ms) return $('emsg').textContent='Temps invalide (ex. 12.34 ou 1:05.20).';
-  try{ await col.doc(editId).update({pseudo, ms}); closeEdit(); }
+  try{ await col.child(editId).update({pseudo, ms}); closeEdit(); }
   catch(e){ $('emsg').textContent='Modification impossible.'; }
 }
 $('ecancel').onclick = closeEdit;
@@ -165,7 +179,7 @@ async function add(){
   if(!col) return say('Base de données indisponible.');
   const id = Date.now().toString(36) + Math.random().toString(36).slice(2,6);
   try{
-    await col.doc(id).set({pseudo, ms, at: Date.now()});
+    await col.child(id).set({pseudo, ms, at: Date.now()});
     $('time').value=''; $('pseudo').value=''; $('pseudo').focus(); say('Ajouté ✔');
     setTimeout(()=>say(''),2000);
   }catch(e){ say('Écriture refusée (réservé à l’organisateur).'); }
@@ -174,17 +188,40 @@ $('btn').onclick = add;
 ['pseudo','time'].forEach(i=>$(i).addEventListener('keydown',e=>{ if(e.key==='Enter') add(); }));
 render();
 
-(async()=>{
-  try{
-    const [db, user] = await Promise.all([claude.use('db'), claude.use('user')]);
-    if(!db){ say('Connecte-toi à Claude pour activer le classement partagé.'); return; }
-    if(user){ const c = user.can('data.write'); if(c === false){ canWrite = false; $('addbox').style.display='none'; } }
-    col = db.collection('times');
-    col.onSnapshot(snap=>{
-      entries = snap.docs.map(d=>({id:d.id, ...d.data()})).filter(e=>e.pseudo && e.ms>0);
-      render();
-    }, err=>say('Erreur de chargement.'));
-  }catch(e){ say('Classement partagé indisponible.'); }
+const firebaseConfig = {
+  apiKey: "AIzaSyDV_NIdwTnu6ztFfJpxJ72vysqYGBmmGng",
+  authDomain: "course-bureau-technique.firebaseapp.com",
+  databaseURL: "https://course-bureau-technique-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "course-bureau-technique",
+  appId: "1:540095866179:web:dda1bad4e7baad64463bf6"
+};
+(function(){
+  const st = t => $('status').textContent = t;
+  if(typeof firebase==='undefined' || !firebaseConfig.apiKey){ st('Configuration Firebase manquante.'); return; }
+  firebase.initializeApp(firebaseConfig);
+  col = firebase.database().ref('times');
+  col.on('value', s=>{
+    const v = s.val() || {};
+    entries = Object.keys(v).map(id=>({id, ...v[id]})).filter(e=>e.pseudo && e.ms>0);
+    render();
+  }, ()=>st('Erreur de chargement.'));
+  const auth = firebase.auth();
+  auth.onAuthStateChanged(u=>{
+    canWrite = !!u;
+    $('addbox').style.display = u ? '' : 'none';
+    $('login').style.display = 'none';
+    $('adminbtn').textContent = u ? 'Se déconnecter' : 'Admin';
+    render();
+  });
+  $('adminbtn').onclick = ()=>{
+    if(auth.currentUser) auth.signOut();
+    else $('login').style.display = $('login').style.display==='flex' ? 'none' : 'flex';
+  };
+  $('loginok').onclick = ()=>{
+    $('lmsg').textContent='';
+    auth.signInWithEmailAndPassword($('email').value.trim(), $('pwd').value)
+      .catch(()=>$('lmsg').textContent='Identifiants incorrects.');
+  };
 })();
 </script>
 </body>
